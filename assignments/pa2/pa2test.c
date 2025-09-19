@@ -8,11 +8,11 @@
 // Macros
 #define READ_WRITE_MODE "r+"
 #define READ_BUF_SIZE 4096 
-#define INPUT_BUF_SIZE 80 
+#define INPUT_BUF_SIZE 80
 
 char* program;
 
-off_t handle_seek(int fd, off_t offset, int whence) {
+void handle_seek(int fd, off_t offset, int whence) {
     off_t res_offset = lseek(fd, offset, whence);
 
     if (res_offset == -1) {
@@ -20,19 +20,21 @@ off_t handle_seek(int fd, off_t offset, int whence) {
         exit(EXIT_FAILURE);
     }
 
-    return res_offset;
+    return;
 }
 
-void handle_null_terminate(char* buffer, int* len) {
-    *len = strlen(input_buf);
-
-    if(*len > INPUT_BUF_SIZE) {
-        // essentially truncate inputted string to match buffer
-        input_buf[INPUT_BUF_SIZE - 1] = '\0';
-        *len = INPUT_BUF_SIZE;
-    } else if (len > 0 && input_buf[len - 1] == '\n') {
-        input_buf[len - 1] = '\0';
-    } 
+void handle_null_terminate(char* buffer, size_t* len) {
+    *len = strlen(buffer);
+    
+    if (*len > 0 && buffer[(*len) - 1] == '\n') {
+        buffer[(*len) - 1] = '\0';
+    } else {
+        // Edge case: user enters string > buf_size
+        // fgets would read buf_size - 1 chars and add \0 as last char
+        // strlen would return buf_size - 1 chars (leaving out \0)
+        // add 1 to ensure we capture the null terminator
+        *len += 1;
+    }
 }
 
 void handle_write(int fd, char* buffer, ssize_t bytes_requested) {
@@ -79,7 +81,6 @@ ssize_t handle_read(int fd, char* buffer, ssize_t bytes_requested) {
 
 void handle_input(char* buffer, int num_char, FILE *stream) {
     if (fgets(buffer, num_char, stream) == NULL) {
-        printf("%s: error reading input\n", program);
         exit(EXIT_FAILURE);
     }
 }
@@ -160,21 +161,18 @@ int main(int argc, char** argv[]) {
 
                 size_t len;
                 handle_null_terminate(input_buf, &len);
-                size_t len = strlen(input_buf);
-                if (len > 0 && input_buf[len - 1] == '\n') {
-                    input_buf[len - 1] = '\0';
-                }
-
+                
                 handle_write(fd, input_buf, len);
                 break;
             case 's':
                 printf("Enter an offset value: ");
                 offset = handle_numeric_input(input_buf, INPUT_BUF_SIZE, stdin);      
+
                 printf("Enter a value for whence: ");
                 whence = handle_numeric_input(input_buf, INPUT_BUF_SIZE, stdin);
                 if (whence < 0 || whence > 3) break;
                 
-                off_t file_offset = handle_seek(fd, offset, whence);
+                handle_seek(fd, offset, whence);
                 break;
             default:
                 // do nothing in this instance
@@ -188,3 +186,4 @@ int main(int argc, char** argv[]) {
     free(input_buf);
     close(fd);
 }
+
