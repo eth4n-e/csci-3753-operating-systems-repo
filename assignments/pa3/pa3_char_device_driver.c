@@ -25,7 +25,6 @@ MODULE_LICENSE("GPL");
 static int open_count = 0;
 static int close_count = 0;
 static char *device_buffer;
-const int zero_idx_buf_size = BUFFER_SIZE - 1; // [0, 899] - last index of buf
 
 ssize_t pa3_char_driver_read(struct file *pfile, char __user *buffer,
                              size_t length, loff_t *offset) {
@@ -41,16 +40,17 @@ ssize_t pa3_char_driver_read(struct file *pfile, char __user *buffer,
   unsigned long uncopied_bytes;
   ssize_t total_bytes_copied;
 
-  if (*offset >= BUFFER_SIZE) { // EOF, no bytes to copy
-    return 0;
-  }
   bytes_available = BUFFER_SIZE - (size_t)*offset;
+
+  if (*offset >= BUFFER_SIZE) { // EOF, no bytes to copy
+    bytes_available = 0;
+  }
 
   if (length < bytes_available) {
     bytes_to_copy = length;
   } else { // attempt to read more than buffer
-    printk(KERN_ALERT "%s: reading %lld bytes will overflow the buffer\n",
-           DEVICE_NAME, length + *offset);
+    printk(KERN_ALERT "%s: reading %ld bytes will overflow the buffer\n",
+           DEVICE_NAME, length);
     bytes_to_copy = bytes_available;
   }
 
@@ -82,10 +82,11 @@ ssize_t pa3_char_driver_write(struct file *pfile, const char __user *buffer,
   unsigned long uncopied_bytes;
   ssize_t total_bytes_copied;
 
-  if (*offset >= BUFFER_SIZE) { // EOF, no bytes to copy
-    return 0;
-  }
   bytes_available = BUFFER_SIZE - (size_t)*offset;
+
+  if (*offset >= BUFFER_SIZE) { // EOF, no space to copy bytes
+    bytes_available = 0;
+  }
 
   if (length < bytes_available) {
     bytes_to_copy = length;
@@ -143,7 +144,7 @@ loff_t pa3_char_driver_seek(struct file *pfile, loff_t offset, int whence) {
     break;
   }
 
-  // constant bound checking for all seek strategies
+  // bound checking for all seek strategies
   if (new_off < 0) { // prevent underflow
     new_off = 0;
   } else if (new_off > BUFFER_SIZE) { // prevent overflow
@@ -152,7 +153,9 @@ loff_t pa3_char_driver_seek(struct file *pfile, loff_t offset, int whence) {
 
   pfile->f_pos = new_off;
   printk(KERN_ALERT "%s: device now at position %lld\n", DEVICE_NAME, new_off);
-  return 0;
+  // seek returns new_off on success -> see:
+  // https://man7.org/linux/man-pages/man2/lseek.2.html
+  return new_off;
 }
 
 /*
