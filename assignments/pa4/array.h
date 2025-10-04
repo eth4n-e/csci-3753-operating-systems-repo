@@ -6,9 +6,10 @@
 #define ARRAY_SIZE 8 // max elements
 #define MAX_NAME_LENGTH                                                        \
   18 // max hostname length + 1 slot for \n + 1 slot for \0 to be safe
-#define SHARED 1
+#define PSHARED 0 // 0 indicates sharing between threads of a process
 
 // shared, circular FIFO array
+// added semaphores as members per piazza post
 typedef struct {
   char *arr[ARRAY_SIZE]; // array of char* (strings)
   int head;              // track first item - consume here
@@ -22,23 +23,16 @@ typedef struct {
 // same process or between related processes sharing common memory region
 // source: google -> "difference between unnamed and named semaphores"
 
-// empty - track empty slots - blocks producer = ARRAY_SIZE
-// full - track filled slots - blocks consumer when full = 0
-// mutex - binary semaphore - ensure access by single thread
-
-/* semaphore relate */
+/* semaphore related */
 void synchronize_init(shared_t *s);
 void synchronize_free(shared_t *s);
 
 /* circular array related */
 int array_init(shared_t *s);
 int array_put(shared_t *s, char *hostname);
-// wrapper methods to integrate with threads
-// int array_put_wrapper(void* arg);
 // char** to allow for newly allocated mem to be returned (addr change)
-// change addr of calling pointer
+// change addr stored by calling pointer
 int array_get(shared_t *s, char **hostname);
-// int array_get_wrapper(void* arg);
 void array_free(shared_t *s);
 
 #endif
