@@ -34,5 +34,3 @@ int array_put(shared_t *s, char *hostname);
 // change addr stored by calling pointer
 int array_get(shared_t *s, char **hostname);
 void array_free(shared_t *s);
-
-#endif

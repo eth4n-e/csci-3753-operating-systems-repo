@@ -29,6 +29,8 @@ int array_init(shared_t *s) {
     }
 
     s->arr[i] = str;
+    // zero out buffer to ensure no garbage data + null term
+    memset(s->arr[i], 0, MAX_NAME_LENGTH);
   }
 
   sem_post(&s->mutex);
@@ -40,7 +42,9 @@ int array_put(shared_t *s, char *hostname) {
   sem_wait(&s->empty); // block producer if no empty slots
   sem_wait(&s->mutex); // acquire exclusive access
 
-  if (strlen(hostname) > MAX_NAME_LENGTH) {
+  size_t host_len;
+  host_len = strlen(hostname);
+  if (host_len >= MAX_NAME_LENGTH) {
     printf("Hostname %s too large to store\n", hostname);
     return -1;
   }
@@ -52,18 +56,13 @@ int array_put(shared_t *s, char *hostname) {
     return -1;
   }
 
-  // might be overkill but scenario where thread
-  // interrupted before grabbing mutex
-  // and another thread fills buffer
-  if (num_items == ARRAY_SIZE)
-    return -1;
-
   // modulo for circular behavior
   // tail = next open index
   s->tail = (s->head + num_items) % ARRAY_SIZE;
-  // strcpy(dest, src) - copy string without overwriting mem addr
-  // prevents putting a var with a stack address that will disappear
-  strcpy(s->arr[s->tail], hostname);
+
+  // always copy max len - 1 to leave space for null term
+  // fixed size copying helps to maintain safety
+  strncpy(s->arr[s->tail], hostname, MAX_NAME_LENGTH - 1);
   printf("Added hostname: %s\n", hostname);
 
   sem_post(&s->mutex); // release access
@@ -76,9 +75,19 @@ int array_get(shared_t *s, char **hostname) {
   sem_wait(&s->full);  // block consumer if no full slots
   sem_wait(&s->mutex); // acquire exclusive access
 
-  printf("Retrieving hostname %s\n", s->arr[s->head]);
+  size_t host_len;
+  char *host;
+  host = s->arr[s->head];
+  host_len = strlen(host);
+
+  printf("Retrieving hostname %s\n", host);
   // overwrite caller value with addr of host on heap mem
-  hostname = &s->arr[s->head];
+  if (hostname == NULL) {
+    printf("Unable to dereference a NULL pointer\n");
+    return -1;
+  }
+
+  strncpy(*hostname, host, MAX_NAME_LENGTH - 1);
   s->head = (s->head + 1) % ARRAY_SIZE;
 
   sem_post(&s->mutex); // release access
