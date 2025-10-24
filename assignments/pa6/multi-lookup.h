@@ -6,13 +6,12 @@
 #include <pthread.h>
 #include <stdio.h>
 
-#define MAX_FILE_NAME_LENGTH 15
+#define MAX_FILE_NAME_LENGTH 20 // names51.txt (11) + input/ (6) ~ 17 + 3 extra
 #define MAX_INPUT_FILES 100
 #define MAX_REQUESTER_THREADS 10
 #define MAX_RESOLVER_THREADS 10
 #define MAX_IP_LENGTH INET6_ADDRSTRLEN
-#define POISON NULL
-#define ERROR -1
+#define POISON "{END}" // braces not allowed in hostnames
 
 typedef struct {
   pthread_mutex_t serviced;
@@ -63,6 +62,12 @@ void *requester(void *arg);
 */
 void *resolver(void *arg);
 
+/* Generic method to spawn threads
+** Handles both requesters and resolvers
+*/
+int spawn_threads(void *(*routine)(void *), pthread_t threads[],
+                  thread_args_t *args[], thread_args_t *shared_args,
+                  int num_threads);
 /* Method to handle creating requester threads and their associated resources
 ** Params:
 ** - Thread id
@@ -70,15 +75,17 @@ void *resolver(void *arg);
 ** - number of threads to create
 ** Returns: integer response code
 */
-int spawn_requesters(pthread_t *req_tid, thread_args_t *args,
-                     int num_requesters);
+int spawn_requesters(pthread_t req_tid[], thread_args_t *args[],
+                     thread_args_t *shared_args, int num_requesters);
 
 /* Method to handle creating resolvers and their associated resources
 ** Returns: integer response code
 */
-int spawn_resolvers(pthread_t *res_tid, int num_resolvers, thread_args_t *args);
+int spawn_resolvers(pthread_t res_tid[], thread_args_t *args[],
+                    thread_args_t *shared_args, int num_resolvers);
 
-int poison_shared_array(array *shared, char *poison, int num_pills);
+int poison_shared_array(array *shared, output_mutexes_t *out_locks,
+                        char *poison, int num_pills);
 
 int main(int argc, char **argv);
 #endif

@@ -9,6 +9,8 @@
 #define BASE_ARG_NUM 6
 #define DATA_START_IDX 5
 
+const int ERROR = -1;
+
 const char *manual =
     "NAME\nmulti-lookup - resolve a set of hostnames to IP "
     "addresses\n\nSYNOPSIS\nmulti-lookup <# requester> <# resolver> <requester "
@@ -78,10 +80,13 @@ ssize_t handle_read(array *shared, FILE *file, char *buf) {}
 // TODO: consider adding buf to store data to thread args
 void *requester(void *arg) {
   thread_args_t *args = (thread_args_t *)arg;
-  pthread_mutex_lock(&args->out_locks->sout);
-  pthread_t thread_id = pthread_self();
-  printf("requester thread %lu\n", thread_id);
-  pthread_mutex_unlock(&args->out_locks->sout);
+  // pthread_mutex_lock(&args->out_locks->sout);
+  // pthread_t thread_id = pthread_self();
+  // printf("requester thread %lu\n", thread_id);
+  // pthread_mutex_unlock(&args->out_locks->sout);
+
+  int result;
+  result = 0;
 
   char file_names[MAX_FILE_NAME_LENGTH];
   char *file_name_store = file_names;
@@ -93,6 +98,16 @@ void *requester(void *arg) {
     // consumption from first shared array
     array_get(args->consume_arr, &file_name_store);
     file_name_store[MAX_FILE_NAME_LENGTH - 1] = '\0';
+    fprintf(stdout, "File name: %s\n", file_name_store);
+
+    // Main thread finished writing file names
+    if (strcmp(file_name_store, POISON) == 0) {
+      // produce poison pill into shared array used by resolvers
+      // no more incoming hosts
+      result = ERROR;
+      break;
+    }
+
     printf("Retrieved file: %s\n", file_name_store);
 
     // requester opens file, reads contents, writes hostnames to serviced, and
@@ -103,7 +118,9 @@ void *requester(void *arg) {
       pthread_mutex_lock(&args->out_locks->serr);
       fprintf(stderr, "Invalid file: %s\n", file);
       pthread_mutex_unlock(&args->out_locks->serr);
-      return ERROR;
+
+      result = ERROR;
+      break;
     }
 
     // read each line of file - store in buffer
@@ -112,16 +129,23 @@ void *requester(void *arg) {
       fprintf(stdout, "Host in buffer: %s\n", buffer);
       pthread_mutex_unlock(&args->out_locks->sout);
       // add hostname to shared arr for resolver
-      array_put(args->produce_arr, buffer);
+      if (array_put(args->produce_arr, buffer) == ERROR) {
+        result = ERROR;
+        break;
+      };
       // write hostname to serviced file
       fprintf(args->output_file, "%s", buffer);
     }
+    if (result == ERROR)
+      break; // catch break from loop above
     pthread_mutex_unlock(&args->out_locks->serviced);
   }
 
+  free(arg);
+  arg = NULL;
   fclose(file);
 
-  return NULL;
+  return result;
 }
 
 /* Thread routine for resolver threads
@@ -138,17 +162,18 @@ void *resolver(void *arg) {
   pthread_mutex_unlock(&args->out_locks->sout);
 
   while (1) {
+    // TODO: add resolver implementation, host seems to be working
   }
 
   return NULL;
 }
 
-/*
+/* General thread spawner that allows for varied arguments and thread routines
  */
-// TODO: maybe change return type to int to detect for errors
-int spawn_requesters(pthread_t threads[], thread_args_t *args[],
-                     thread_args_t *shared_args, int num_threads) {
-  int create_res;
+int spawn_threads(void *(*routine)(void *), pthread_t threads[],
+                  thread_args_t *args[], thread_args_t *shared_args,
+                  int num_threads) {
+  int result;
 
   for (int i = 0; i < num_threads; i++) {
     args[i] = malloc(sizeof(thread_args_t));
@@ -157,20 +182,20 @@ int spawn_requesters(pthread_t threads[], thread_args_t *args[],
       return ERROR;
     }
 
-    // Each thread gets a unique copy of arguments
-    // Requester threads share common resources
-    args[i]->consume_arr = shared_args->file_store;
-    args[i]->produce_arr = shared_args->host_store;
-    args[i]->output_file = shared_args->serviced;
-    args[i]->out_locks = shared_args->output;
-    args[i]->num_serviced = 0;
+    // Each thread gets a unique copy of arguments (on heap)
+    // but share common resources to begin
+    args[i]->consume_arr = shared_args->consume_arr;
+    args[i]->produce_arr = shared_args->produce_arr;
+    args[i]->output_file = shared_args->output_file;
+    args[i]->out_locks = shared_args->out_locks;
+    args[i]->num_serviced = shared_args->num_serviced;
 
-    create_res =
-        pthread_create(&threads[i], NULL, (void *)requester, (void *)args[i]);
-    if (create_res == ERROR) {
-      pthread_mutex_lock(args[i]->out_locks->serr);
+    result =
+        pthread_create(&threads[i], NULL, (void *)routine, (void *)args[i]);
+    if (result == ERROR) {
+      pthread_mutex_lock(&args[i]->out_locks->serr);
       fprintf(stderr, "Failed to create thread\n");
-      pthread_mutex_unlock(args[i]->out_locks->serr);
+      pthread_mutex_unlock(&args[i]->out_locks->serr);
 
       free(args[i]);
       return ERROR;
@@ -178,39 +203,14 @@ int spawn_requesters(pthread_t threads[], thread_args_t *args[],
   }
 }
 
-/*
- */
-void spawn_resolvers(pthread_t *res_tid, int num_resolvers,
-                     thread_args_t *args) {
-  for (int i = 0; i < num_requesters; i++) {
-    res_args_arr[i] = malloc(sizeof(thread_args_t));
-    if (res_args_arr[i] == NULL) {
-      fprintf(stderr, "Error allocating memory for arguments\n");
-      return;
-    }
-  }
-
-  for (int i = 0; i < num_resolvers; i++) {
-    thread_args_t resolver_args;
-
-    resolver_args.consume_arr = &host_store;
-    resolver_args.produce_arr =
-        NULL; // resolver does not produce to a shared arr
-    resolver_args.output_file = results;
-    resolver_args.out_locks = &output;
-
-    *res_args_arr[i] = resolver_args;
-    pthread_create(&res_tid[i], NULL, (void *)resolver, (void *)args);
-  }
-}
-
-int poison_shared_array(array *shared, char *poison, int num_pills,
-                        output_mutexes_t *out_locks) {
+int poison_shared_array(array *shared, output_mutexes_t *out_locks,
+                        char *poison, int num_pills) {
   for (int i = 0; i < num_pills; i++) {
     if (array_put(shared, poison) == ERROR) {
-      pthread_mutex_lock(&out_locks->serr);
-      fprintf(stderr, "Failed to write to shared array\n");
-      pthread_mutex_unlock(&out_locks->serr);
+      // pthread_mutex_lock(&out_locks->serr);
+      // fprintf(stderr, "Failed to write to shared array\n");
+      // pthread_mutex_unlock(&out_locks->serr);
+      return ERROR;
     }
   }
 }
@@ -246,13 +246,13 @@ int main(int argc, char **argv) {
 
   serviced = fopen(argv[3], "w");
   if (serviced == NULL) {
-    fprintf(stderr, "Invalid file: %s\n", argv[3]);
+    fprintf(stderr, "Invalid file serviced: %s\n", argv[3]);
     return ERROR;
   }
 
   results = fopen(argv[4], "w");
   if (results == NULL) {
-    fprintf(stderr, "Invalid file: %s\n", argv[4]);
+    fprintf(stderr, "Invalid file results: %s\n", argv[4]);
     return ERROR;
   }
 
@@ -271,23 +271,51 @@ int main(int argc, char **argv) {
   output_mutexes_t output;
   init_resources(&file_store, &host_store, &output);
 
+  int thread_result;
   // setup requesters
   pthread_t req_tid[num_requesters];
   thread_args_t *req_args[num_requesters];
-  spawn_requesters(req_tid, req_args, num_requesters);
+  // define args common across requesters
+  thread_args_t shared_req_args;
+  shared_req_args.consume_arr = &file_store;
+  shared_req_args.produce_arr = &host_store;
+  shared_req_args.output_file = serviced;
+  shared_req_args.out_locks = &output;
+  shared_req_args.num_serviced = 0;
+
+  thread_result = spawn_threads(requester, req_tid, req_args, &shared_req_args,
+                                num_requesters);
+
+  if (thread_result == ERROR) {
+    return ERROR;
+  }
 
   // setup resolvers
   pthread_t res_tid[num_resolvers];
   thread_args_t *res_args[num_requesters];
-  spawn_resolvers(res_tid, num_resolvers, &resolver_args);
+
+  // define args common across resolvers
+  thread_args_t shared_res_args;
+  shared_res_args.consume_arr = &host_store;
+  shared_res_args.produce_arr = NULL; // resolvers do not produce
+  shared_res_args.output_file = results;
+  shared_res_args.out_locks = &output;
+  shared_res_args.num_serviced = 0;
+
+  thread_result = spawn_threads(resolver, res_tid, res_args, &shared_res_args,
+                                num_resolvers);
+
+  if (thread_result == ERROR) {
+    return ERROR;
+  }
 
   // write filenames to first shared array
   int file_write_res;
   for (int i = DATA_START_IDX; i < argc; i++) {
     if (array_put(&file_store, argv[i]) == ERROR) {
-      pthread_mutex_lock(&output->serr);
+      pthread_mutex_lock(&output.serr);
       fprintf(stderr, "Failed to write to shared array\n");
-      pthread_mutex_unlock(&output->serr);
+      pthread_mutex_unlock(&output.serr);
     }
   }
 
