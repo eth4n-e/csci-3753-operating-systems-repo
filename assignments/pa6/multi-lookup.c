@@ -1,15 +1,15 @@
 #include "multi-lookup.h"
+#include "util.h"
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define BASE_ARG_NUM 6
 #define DATA_START_IDX 5
-
-const int ERROR = -1;
 
 const char *manual =
     "NAME\nmulti-lookup - resolve a set of hostnames to IP "
@@ -79,41 +79,46 @@ ssize_t handle_read(array *shared, FILE *file, char *buf) {}
 
 // TODO: consider adding buf to store data to thread args
 void *requester(void *arg) {
+  // track method time
+  // reason for using clock_gettime:
+  // https://stackoverflow.com/questions/5362577/c-gettimeofday-for-computing-time
+  struct timespec start, finish;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
   thread_args_t *args = (thread_args_t *)arg;
-  // pthread_mutex_lock(&args->out_locks->sout);
-  // pthread_t thread_id = pthread_self();
-  // printf("requester thread %lu\n", thread_id);
-  // pthread_mutex_unlock(&args->out_locks->sout);
+  pthread_t thread_id = pthread_self();
 
   int result;
   result = 0;
 
-  char file_names[MAX_FILE_NAME_LENGTH];
-  char *file_name_store = file_names;
+  // args to retrieve file names
+  char file_buf[MAX_FILE_NAME_LENGTH];
+  char *file_name = file_buf;
 
+  // vars for reading from file
   FILE *file;
   char buffer[MAX_NAME_LENGTH];
 
   while (1) {
     // consumption from first shared array
-    array_get(args->consume_arr, &file_name_store);
-    file_name_store[MAX_FILE_NAME_LENGTH - 1] = '\0';
-    fprintf(stdout, "File name: %s\n", file_name_store);
+    if (array_get(args->consume_arr, &file_name) == ERROR) {
+      result = ERROR;
+      break;
+    }
+    file_name[MAX_FILE_NAME_LENGTH - 1] = '\0';
 
     // Main thread finished writing file names
-    if (strcmp(file_name_store, POISON) == 0) {
+    if (strcmp(file_name, POISON) == 0) {
       // produce poison pill into shared array used by resolvers
       // no more incoming hosts
+      fprintf(stdout, "Poison pill consumed");
       result = ERROR;
       break;
     }
 
-    printf("Retrieved file: %s\n", file_name_store);
-
-    // requester opens file, reads contents, writes hostnames to serviced, and
-    // adds hostnames to results.txt restrict access to file received
+    // restrict access to file received
     pthread_mutex_lock(&args->out_locks->serviced);
-    file = fopen(file_name_store, "r");
+    file = fopen(file_name, "r");
     if (file == NULL) {
       pthread_mutex_lock(&args->out_locks->serr);
       fprintf(stderr, "Invalid file: %s\n", file);
@@ -125,22 +130,33 @@ void *requester(void *arg) {
 
     // read each line of file - store in buffer
     while (fgets(buffer, MAX_NAME_LENGTH, file) != NULL) {
-      pthread_mutex_lock(&args->out_locks->sout);
-      fprintf(stdout, "Host in buffer: %s\n", buffer);
-      pthread_mutex_unlock(&args->out_locks->sout);
+      // replace newline with null term
+      // source:
+      // https://stackoverflow.com/questions/2693776/removing-trailing-newline-character-from-fgets-input
+      buffer[strcspn(buffer, "\n")] = 0;
       // add hostname to shared arr for resolver
       if (array_put(args->produce_arr, buffer) == ERROR) {
         result = ERROR;
         break;
       };
       // write hostname to serviced file
-      fprintf(args->output_file, "%s", buffer);
+      fprintf(args->output_file, "%s\n", buffer);
     }
     if (result == ERROR)
       break; // catch break from loop above
     pthread_mutex_unlock(&args->out_locks->serviced);
+
+    args->num_serviced++;
   }
 
+  clock_gettime(CLOCK_MONOTONIC, &finish);
+  // display thread stats
+  pthread_mutex_lock(&args->out_locks->sout);
+  fprintf(stdout, "thread %lu serviced %d files in %ld seconds\n", thread_id,
+          args->num_serviced, finish.tv_sec - start.tv_sec);
+  pthread_mutex_unlock(&args->out_locks->sout);
+
+  // cleanup thread resources
   free(arg);
   arg = NULL;
   fclose(file);
@@ -155,17 +171,63 @@ void *requester(void *arg) {
 ** - Writes (hostname, IP) pair to results file
 */
 void *resolver(void *arg) {
+  // track execution time
+  struct timespec start, finish;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
   thread_args_t *args = (thread_args_t *)arg;
-  pthread_mutex_lock(&args->out_locks->sout);
   pthread_t thread_id = pthread_self();
-  printf("resolver thread %lu\n", thread_id);
-  pthread_mutex_unlock(&args->out_locks->sout);
+
+  int result;
+  result = 0;
+
+  // vars to retrieve host names
+  char host_buf[MAX_NAME_LENGTH];
+  char *host_name = host_buf;
+
+  // vars to retrieve dns resolved hostname
+  char dns_buf[MAX_IP_LENGTH];
+  char *dns_store = dns_buf;
 
   while (1) {
-    // TODO: add resolver implementation, host seems to be working
+    if (array_get(args->consume_arr, &host_name) == ERROR) {
+      result = ERROR;
+      break;
+    }
+
+    if (strcmp(host_name, POISON) == 0) {
+      // produce poison pill into shared array used by resolvers
+      // no more incoming hosts
+      fprintf(stdout, "Poison pill consumed");
+      result = ERROR;
+      break;
+    }
+
+    // resolve hostname
+    if (dnslookup(host_name, dns_store, MAX_IP_LENGTH) == UTIL_FAILURE) {
+      // copy "NOT_RESOLVED" into buffer
+      strncpy(dns_store, NOT_RESOLVED, MAX_IP_LENGTH);
+      dns_store[MAX_IP_LENGTH - 1] = '\0';
+    }
+
+    pthread_mutex_lock(&args->out_locks->results);
+    fprintf(args->output_file, "%s, %s\n", host_name, dns_store);
+    pthread_mutex_unlock(&args->out_locks->results);
+
+    args->num_serviced++;
   }
 
-  return NULL;
+  clock_gettime(CLOCK_MONOTONIC, &finish);
+
+  pthread_mutex_lock(&args->out_locks->sout);
+  fprintf(stdout, "thread %lu resolved %d hosts in %ld seconds\n", thread_id,
+          args->num_serviced, finish.tv_sec - start.tv_sec);
+  pthread_mutex_unlock(&args->out_locks->sout);
+
+  free(arg);
+  arg = NULL;
+
+  return (void *)result;
 }
 
 /* General thread spawner that allows for varied arguments and thread routines
@@ -173,13 +235,16 @@ void *resolver(void *arg) {
 int spawn_threads(void *(*routine)(void *), pthread_t threads[],
                   thread_args_t *args[], thread_args_t *shared_args,
                   int num_threads) {
-  int result;
+  int result = 0;
 
   for (int i = 0; i < num_threads; i++) {
     args[i] = malloc(sizeof(thread_args_t));
     if (args[i] == NULL) {
       fprintf(stderr, "Error allocating memory for arguments\n");
-      return ERROR;
+      result = ERROR;
+      free(args[i]);
+      args[i] = NULL;
+      break;
     }
 
     // Each thread gets a unique copy of arguments (on heap)
@@ -198,9 +263,11 @@ int spawn_threads(void *(*routine)(void *), pthread_t threads[],
       pthread_mutex_unlock(&args[i]->out_locks->serr);
 
       free(args[i]);
-      return ERROR;
+      args[i] = NULL;
     }
   }
+
+  return result;
 }
 
 int poison_shared_array(array *shared, output_mutexes_t *out_locks,
@@ -246,13 +313,13 @@ int main(int argc, char **argv) {
 
   serviced = fopen(argv[3], "w");
   if (serviced == NULL) {
-    fprintf(stderr, "Invalid file serviced: %s\n", argv[3]);
+    fprintf(stderr, "Invalid filename: %s\n", argv[3]);
     return ERROR;
   }
 
   results = fopen(argv[4], "w");
   if (results == NULL) {
-    fprintf(stderr, "Invalid file results: %s\n", argv[4]);
+    fprintf(stderr, "Invalid filename: %s\n", argv[4]);
     return ERROR;
   }
 
@@ -310,7 +377,6 @@ int main(int argc, char **argv) {
   }
 
   // write filenames to first shared array
-  int file_write_res;
   for (int i = DATA_START_IDX; i < argc; i++) {
     if (array_put(&file_store, argv[i]) == ERROR) {
       pthread_mutex_lock(&output.serr);
@@ -333,11 +399,13 @@ int main(int argc, char **argv) {
   // TODO: idea -> when requester receives poison pill it should write poison
   // pill and then end
 
+  // poison resolvers after all requesters finish
+  // poison_shared_array(&host_store, POISON, num_resolvers);
+
   for (int i = 0; i < num_resolvers; i++) {
     pthread_join(res_tid[i], NULL);
+    free(res_args[i]);
   }
-
-  // TODO: free the args passed to each thread
 
   free_resources(&file_store, &host_store, &output);
 

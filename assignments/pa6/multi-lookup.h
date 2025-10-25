@@ -12,6 +12,8 @@
 #define MAX_RESOLVER_THREADS 10
 #define MAX_IP_LENGTH INET6_ADDRSTRLEN
 #define POISON "{END}" // braces not allowed in hostnames
+#define ERROR -1
+#define NOT_RESOLVED "NOT_RESOLVED"
 
 typedef struct {
   pthread_mutex_t serviced;
