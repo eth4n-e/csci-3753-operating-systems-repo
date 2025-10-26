@@ -38,16 +38,6 @@ void output_synchronize_free(output_mutexes_t *output);
 void init_resources(array *files, array *host, output_mutexes_t *output);
 void free_resources(array *files, array *host, output_mutexes_t *output);
 
-/* Method to handle writing to file
- */
-ssize_t handle_write(output_mutexes_t *output, FILE *file, char *buf);
-
-/* Method to handle reading file inputs
- */
-// TODO: intending on only using this in main method
-// TODO: not sure if mutexes necessary here
-ssize_t handle_read(array *shared, FILE *file, char *buf);
-
 /* Thread routine for requester threads
 ** Functionality:
 ** - Reads filenames from a shared array
@@ -70,24 +60,8 @@ void *resolver(void *arg);
 int spawn_threads(void *(*routine)(void *), pthread_t threads[],
                   thread_args_t *args[], thread_args_t *shared_args,
                   int num_threads);
-/* Method to handle creating requester threads and their associated resources
-** Params:
-** - Thread id
-** - Array to hold thread arguments
-** - number of threads to create
-** Returns: integer response code
-*/
-int spawn_requesters(pthread_t req_tid[], thread_args_t *args[],
-                     thread_args_t *shared_args, int num_requesters);
 
-/* Method to handle creating resolvers and their associated resources
-** Returns: integer response code
-*/
-int spawn_resolvers(pthread_t res_tid[], thread_args_t *args[],
-                    thread_args_t *shared_args, int num_resolvers);
-
-int poison_shared_array(array *shared, output_mutexes_t *out_locks,
-                        char *poison, int num_pills);
+int poison_shared_array(array *shared, char *poison, int num_pills);
 
 int main(int argc, char **argv);
 #endif
